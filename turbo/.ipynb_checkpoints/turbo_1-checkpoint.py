@@ -15,8 +15,6 @@ from copy import deepcopy
 
 import gpytorch
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
-
 import torch
 from torch.quasirandom import SobolEngine
 
@@ -64,8 +62,6 @@ class Turbo1:
         min_cuda=1024,
         device="cpu",
         dtype="float64",
-        p=2,
-        prop=1.2
     ):
 
         # Very basic input checks
@@ -123,12 +119,7 @@ class Turbo1:
         # Device and dtype for GPyTorch
         self.min_cuda = min_cuda
         self.dtype = torch.float32 if dtype == "float32" else torch.float64
-        self.device = torch.device("cuda:0") if device == "cuda" else torch.device("cpu")
-        self.p = p
-        self.prop = prop
-        self.k = min(100 * self.dim, 5000)
-        self.k_min = 50
-        self.k_init = min(100 * self.dim, 5000)
+        self.device = torch.device("cuda") if device == "cuda" else torch.device("cpu")
         if self.verbose:
             print("Using dtype = %s \nUsing device = %s" % (self.dtype, self.device))
             sys.stdout.flush()
@@ -142,7 +133,6 @@ class Turbo1:
         self.failcount = 0
         self.succcount = 0
         self.length = self.length_init
-        self.k = self.k_init
 
     def _adjust_length(self, fX_next):
         if np.min(fX_next) < np.min(self._fX) - 1e-3 * math.fabs(np.min(self._fX)):
@@ -153,12 +143,10 @@ class Turbo1:
             self.failcount += 1
 
         if self.succcount == self.succtol:  # Expand trust region
-            self.length = min([self.prop * self.length, self.length_max])
-            self.k = min([int(self.prop*self.k), int(self.prop*self.n_cand)])
+            self.length = min([2.0 * self.length, self.length_max])
             self.succcount = 0
         elif self.failcount == self.failtol:  # Shrink trust region
-            self.length /= self.prop
-            self.k = int(self.k/self.prop)
+            self.length /= 2.0
             self.failcount = 0
 
     def _create_candidates(self, X, fX, length, n_training_steps, hypers):
@@ -200,26 +188,18 @@ class Turbo1:
         # Draw a Sobolev sequence in [lb, ub]
         seed = np.random.randint(int(1e6))
         sobol = SobolEngine(self.dim, scramble=True, seed=seed)
-        pert = sobol.draw(int(self.prop*self.n_cand)).to(dtype=dtype, device=device).cpu().detach().numpy()
+        pert = sobol.draw(self.n_cand).to(dtype=dtype, device=device).cpu().detach().numpy()
         pert = lb + (ub - lb) * pert
 
         # Create a perturbation mask
         prob_perturb = min(20.0 / self.dim, 1.0)
-        mask = np.random.rand(int(self.prop*self.n_cand), self.dim) <= prob_perturb
+        mask = np.random.rand(self.n_cand, self.dim) <= prob_perturb
         ind = np.where(np.sum(mask, axis=1) == 0)[0]
         mask[ind, np.random.randint(0, self.dim - 1, size=len(ind))] = 1
 
         # Create candidate points
-        X_cand = x_center.copy() * np.ones((int(self.prop*self.n_cand), self.dim))
+        X_cand = x_center.copy() * np.ones((self.n_cand, self.dim))
         X_cand[mask] = pert[mask]
-        
-        
-        nbrs = NearestNeighbors(n_neighbors=max(int(self.k), 1), metric='minkowski', p=self.p,
-                               metric_params={'w': weights})
-        print(f'k: {self.k}')
-        nbrs.fit(X_cand)
-        
-        _, indices = nbrs.kneighbors(x_center)
 
         # Figure out what device we are running on
         if len(X_cand) < self.min_cuda:
@@ -232,7 +212,7 @@ class Turbo1:
 
         # We use Lanczos for sampling if we have enough data
         with torch.no_grad(), gpytorch.settings.max_cholesky_size(self.max_cholesky_size):
-            X_cand_torch = torch.tensor(X_cand[indices[0], :]).to(device=device, dtype=dtype)
+            X_cand_torch = torch.tensor(X_cand).to(device=device, dtype=dtype)
             y_cand = gp.likelihood(gp(X_cand_torch)).sample(torch.Size([self.batch_size])).t().cpu().detach().numpy()
 
         # Remove the torch variables
@@ -284,12 +264,13 @@ class Turbo1:
                 sys.stdout.flush()
 
             # Thompson sample to get next suggestions
-            while self.n_evals < self.max_evals and self.k >= self.k_min: #  and self.length >= self.length_min:
+            while self.n_evals < self.max_evals and self.length >= self.length_min:
                 # Warp inputs
                 X = to_unit_cube(deepcopy(self._X), self.lb, self.ub)
 
                 # Standardize values
                 fX = deepcopy(self._fX).ravel()
+
                 # Create th next batch
                 X_cand, y_cand, _ = self._create_candidates(
                     X, fX, length=self.length, n_training_steps=self.n_training_steps, hypers={}
