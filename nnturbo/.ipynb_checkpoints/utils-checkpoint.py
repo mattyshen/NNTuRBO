@@ -37,3 +37,18 @@ def latin_hypercube(n_pts, dim):
     pert = np.random.uniform(-1.0, 1.0, (n_pts, dim)) / float(2 * n_pts)
     X += pert
     return X
+
+def compute_max_features(max_features, n_features):
+    """Get max_features as int type"""
+    if isinstance(max_features, int):
+        return max_features
+    elif isinstance(max_features, float):
+        return max(1, int(max_features * n_features))
+    elif max_features == "sqrt":
+        return int(np.sqrt(n_features))
+    elif max_features == "log2":
+        return int(np.log2(n_features))
+    elif max_features is None or max_features == 1.0:
+        return n_features
+    else:
+        raise ValueError(f"Invalid value for max_features: {max_features}")

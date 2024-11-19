@@ -168,11 +168,13 @@ class NNTurbo1:
             self.k = int(self.k/self.prop)
             self.failcount = 0
 
-    def _create_candidates(self, X, fX, length, k, n_training_steps, hypers):
+    def _create_candidates(self, X, fX, length, k, n_training_steps, hypers, features=None):
         """Generate candidates assuming X has been scaled to [0,1]^d."""
         # Pick the center as the point with the smallest function values
         # NOTE: This may not be robust to noise, in which case the posterior mean of the GP can be used instead
         assert X.min() >= 0.0 and X.max() <= 1.0
+        if features is None:
+            features = np.arange(self.dim)
 
         # Standardize function values.
         mu, sigma = np.median(fX), fX.std()
@@ -222,12 +224,12 @@ class NNTurbo1:
         X_cand[mask] = pert[mask]
         
         
-        nbrs = NearestNeighbors(n_neighbors=max(int(k), 1), metric='minkowski', p=self.p,
+        nbrs = NearestNeighbors(n_neighbors=max(int(k), self.batch_size), metric='minkowski', p=self.p,
                                metric_params={'w': weights})
-        print(f'k: {k}')
-        nbrs.fit(X_cand)
+        #print(f'k: {k}')
+        nbrs.fit(X_cand[:, features])
         
-        _, indices = nbrs.kneighbors(x_center)
+        _, indices = nbrs.kneighbors(x_center[:, features])
 
         # Figure out what device we are running on
         if len(X_cand) < self.min_cuda:

@@ -19,7 +19,7 @@ import torch
 
 from .gp import train_gp
 from .nn_turbo_1 import NNTurbo1
-from .utils import from_unit_cube, latin_hypercube, to_unit_cube
+from .utils import from_unit_cube, latin_hypercube, to_unit_cube, compute_max_features
 
 
 class NNTurboM(NNTurbo1):
@@ -60,6 +60,7 @@ class NNTurboM(NNTurbo1):
         n_trust_regions,
         p=2,
         prop=1.2,
+        max_features=None,
         batch_size=1,
         verbose=True,
         use_ard=True,
@@ -70,6 +71,9 @@ class NNTurboM(NNTurbo1):
         dtype="float64",
     ):
         self.n_trust_regions = n_trust_regions
+        self.dim = len(lb)
+        self.max_features = compute_max_features(max_features, self.dim)
+        
         super().__init__(
             f=f,
             lb=lb,
@@ -108,6 +112,8 @@ class NNTurboM(NNTurbo1):
         self.succcount = np.zeros(self.n_trust_regions, dtype=int)
         self.length = self.length_init * np.ones(self.n_trust_regions)
         self.k = self.k_init * np.ones(self.n_trust_regions, dtype=int)
+        self.features = [np.random.choice(self.dim, size=self.max_features, replace=False) for i in range(self.n_trust_regions)]
+        self.feat_c = np.ones(self.dim)
 
     def _adjust_length(self, fX_next, i):
         assert i >= 0 and i <= self.n_trust_regions - 1
@@ -124,10 +130,15 @@ class NNTurboM(NNTurbo1):
             self.length[i] = min([self.prop * self.length[i], self.length_max])
             self.k[i] = min([int(self.prop * self.k[i]), int(self.prop*self.n_cand)])
             self.succcount[i] = 0
+            print('updating feature probs')
+            print(self.feat_c)
+            self.feat_c[self.features[i]] += 1
+            print(self.feat_c)
         elif self.failcount[i] >= self.failtol:  # Shrink trust region (we may have exceeded the failtol)
             self.length[i] /= self.prop
             self.k[i] = int(self.k[i]/self.prop)
             self.failcount[i] = 0
+            #self.feat_c[self.features[i]] -= 1
 
     def _select_candidates(self, X_cand, y_cand):
         """Select candidates from samples from all trust regions."""
@@ -244,8 +255,10 @@ class NNTurboM(NNTurbo1):
                     self.succcount[i] = 0
                     self.failcount[i] = 0
                     self._idx[idx_i, 0] = -1  # Remove points from trust region
-                    self.hypers[i] = {}  # Remove model hypers
-
+                    self.hypers[i] = {}  # Remove model hypersf
+                    print(f'old features for TR-{i}: {self.features[i]}')
+                    self.features[i] = np.random.choice(self.dim, size=self.max_features, replace=False, p=(self.feat_c/np.sum(self.feat_c)))
+                    print(f'new features for TR-{i}: {self.features[i]}')
                     # Create a new initial design
                     X_init = latin_hypercube(self.n_init, self.dim)
                     X_init = from_unit_cube(X_init, self.lb, self.ub)
