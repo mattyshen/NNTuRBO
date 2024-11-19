@@ -107,7 +107,7 @@ class NNTurboM(NNTurbo1):
         self.failcount = np.zeros(self.n_trust_regions, dtype=int)
         self.succcount = np.zeros(self.n_trust_regions, dtype=int)
         self.length = self.length_init * np.ones(self.n_trust_regions)
-        self.k = self.k_init * np.ones(self.n_trust_regions)
+        self.k = self.k_init * np.ones(self.n_trust_regions, dtype=int)
 
     def _adjust_length(self, fX_next, i):
         assert i >= 0 and i <= self.n_trust_regions - 1
@@ -131,21 +131,26 @@ class NNTurboM(NNTurbo1):
 
     def _select_candidates(self, X_cand, y_cand):
         """Select candidates from samples from all trust regions."""
-        assert X_cand.shape == (self.n_trust_regions, self.n_cand, self.dim)
-        assert y_cand.shape == (self.n_trust_regions, self.n_cand, self.batch_size)
-        assert X_cand.min() >= 0.0 and X_cand.max() <= 1.0 and np.all(np.isfinite(y_cand))
+        #i: TR, j n_cand (k)
+        assert np.all([X_cand[i].shape == (self.k[i], self.dim) for i in range(self.n_trust_regions)])
+        assert np.all([y_cand[i].shape == (self.k[i], self.batch_size) for i in range(self.n_trust_regions)])
+        assert np.all([X_cand[i].min() >= 0.0 and X_cand[i].max() <= 1.0  for i in range(self.n_trust_regions)]) and np.all([np.all(np.isfinite(y_cand[i])) for i in range(self.n_trust_regions)])
 
         X_next = np.zeros((self.batch_size, self.dim))
         idx_next = np.zeros((self.batch_size, 1), dtype=int)
         for k in range(self.batch_size):
-            i, j = np.unravel_index(np.argmin(y_cand[:, :, k]), (self.n_trust_regions, self.n_cand))
-            assert y_cand[:, :, k].min() == y_cand[i, j, k]
-            X_next[k, :] = deepcopy(X_cand[i, j, :])
-            idx_next[k, 0] = i
-            assert np.isfinite(y_cand[i, j, k])  # Just to make sure we never select nan or inf
+            argmins = [np.argmin(y_cand[i][:, k]) for i in range(self.n_trust_regions)]
+            argmin_mins = [(i, j, y_cand[i][j, k]) for i, j in enumerate(argmins)]
+            
+            i_min, j_min, min_val = min(argmin_mins, key=lambda x: x[2])
+            
+            assert min([m[2] for m in argmin_mins]) == y_cand[i_min][j_min, k]
+            X_next[k, :] = deepcopy(X_cand[i_min][j_min, :])
+            idx_next[k, 0] = i_min
+            assert np.isfinite(y_cand[i_min][j_min, k])  # Just to make sure we never select nan or inf
 
             # Make sure we never pick this point again
-            y_cand[i, j, :] = np.inf
+            y_cand[i_min][j_min, :] = np.inf
 
         return X_next, idx_next
 
@@ -174,7 +179,6 @@ class NNTurboM(NNTurbo1):
             # Generate candidates from each TR
             # X_cand = np.zeros((self.n_trust_regions, self.n_cand, self.dim))
             # y_cand = np.inf * np.ones((self.n_trust_regions, self.n_cand, self.batch_size))
-            
             X_cand = [np.zeros((self.k[i], self.dim)) for i in range(self.n_trust_regions)]
             y_cand = [np.inf * np.ones((self.k[i], self.batch_size)) for i in range(self.n_trust_regions)]
             for i in range(self.n_trust_regions):
